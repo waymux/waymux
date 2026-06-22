@@ -272,7 +272,8 @@ secret-scan:
     GIT_DEPTH: "0"
   before_script:
     - apt-get update
-    - apt-get install -y --no-install-recommends curl ca-certificates tar grep
+    # git is required: gitleaks detect scans the git history, not just the tree.
+    - apt-get install -y --no-install-recommends curl ca-certificates tar grep git
   script:
     - url=$(curl -fsSL https://api.github.com/repos/gitleaks/gitleaks/releases/latest | grep -oE 'https://[^"]*_linux_x64\.tar\.gz' | head -1)
     - echo "installing gitleaks from $url"
