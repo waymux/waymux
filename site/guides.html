@@ -256,7 +256,7 @@ target/release/<span class="k">waymux-session</span> --name demo --width 1280 --
         <!-- ================================================================ -->
         <h2 id="ci">Headless CI testing (no GPU)</h2>
 
-        <p>waymux doubles as an "Xvfb for Wayland": host real GUI apps in a nested session, inject input, and assert on screenshots or a lossless recording, with no display and no GPU. The compositor does no rendering of its own, frames are captured from CPU memory, screenshots are encoded on the CPU, and FFV1 is a CPU encoder. The whole loop runs on a stock shared CI runner.</p>
+        <p>waymux doubles as an "Xvfb for Wayland": host real GUI apps in a nested session, inject input, and assert on what they drew, all with no display and no GPU. Screenshots are the workhorse here: the compositor does no rendering of its own, and frames are captured and encoded on the CPU, so a screenshot is cheap and immediate. Recording works too (FFV1 is a CPU encoder), but on the CPU it runs at roughly 10 frames per second, so treat a recording as a record of what happened, handy as a failure artifact, rather than smooth video. For high-frame-rate or performance-sensitive recording, add a GPU and a hardware encoder. The whole loop runs on a stock shared CI runner.</p>
 
         <pre><code>launch app  ->  inject input  ->  screenshot + assert  ->  record (FFV1)</code></pre>
 
