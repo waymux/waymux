@@ -92,6 +92,39 @@ jobs:
           LIBGL_ALWAYS_SOFTWARE: "1"
         run: cargo test --workspace --all-targets --no-fail-fast
 
+  embedded-e2e:
+    name: embedded app e2e (software / no GPU)
+    runs-on: ubuntu-24.04
+    # Run in a Debian container so `apt install chromium` is the real package:
+    # the ubuntu runner's chromium is a snap that will not start headless. This
+    # matches the GitLab job and tests/e2e/Dockerfile exactly. trixie (not
+    # bookworm) for ffmpeg 7: the session crate's Vulkan FFV1 shim needs the
+    # AVVkFrame fields added in ffmpeg 6.1+.
+    container: rust:1.94-trixie
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install software render stack + apps
+        # Build deps (incl. clang/libclang for the ffmpeg bindings) + Mesa
+        # software GL + ffmpeg + a session bus + the two real GUI clients.
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            libwayland-dev libgbm-dev libavutil-dev libavformat-dev libavcodec-dev \
+            libavfilter-dev libavdevice-dev libswscale-dev libswresample-dev \
+            libvulkan-dev libxkbcommon-dev pkg-config build-essential clang libclang-dev \
+            libgl1-mesa-dri libegl-mesa0 libegl1 libgles2 \
+            ffmpeg python3 dbus procps fonts-dejavu-core \
+            chromium kwrite foot qt6-wayland
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the daemon + CLI + session binaries
+        run: cargo build -p waymux-cli -p waymux-daemon -p waymux-session
+      - name: Run the embedded-app e2e (llvmpipe, no GPU)
+        env:
+          WAYMUX_E2E_NO_BUILD: "1"
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          GALLIUM_DRIVER: llvmpipe
+        run: dbus-run-session -- bash tests/e2e/run-e2e-embedded.sh
+
   deny:
     name: cargo deny
     runs-on: ubuntu-24.04
@@ -205,3 +238,77 @@ jobs:
             exit 1
           fi
           echo "clean: no internal-tree leaks in the published surface"
+
+  kde-app-demo:
+    name: KDE app demo (software / no GPU)
+    runs-on: ubuntu-24.04
+    container: rust:1.94-trixie
+    steps:
+      - uses: actions/checkout@v5
+      - name: deps
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            libwayland-dev libgbm-dev libavutil-dev libavformat-dev libavcodec-dev \
+            libavfilter-dev libavdevice-dev libswscale-dev libswresample-dev \
+            libvulkan-dev libxkbcommon-dev pkg-config build-essential clang libclang-dev \
+            libgl1-mesa-dri libegl-mesa0 libegl1 libgles2 \
+            ffmpeg python3 dbus procps fonts-dejavu-core kwrite qt6-wayland
+      - run: cargo build --release -p waymux-cli -p waymux-daemon -p waymux-session
+      - name: app demo
+        env: { WAYMUX_BINDIR: target/release, ARTIFACT_DIR: artifacts }
+        run: dbus-run-session -- bash tests/e2e/demo-kde-app.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: kde-app-demo, path: artifacts/ }
+
+  plasma-demo:
+    name: Plasma 6 desktop demo (software / no GPU)
+    runs-on: ubuntu-24.04
+    container: rust:1.94-trixie
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+      - name: deps
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            libwayland-dev libgbm-dev libavutil-dev libavformat-dev libavcodec-dev \
+            libavfilter-dev libavdevice-dev libswscale-dev libswresample-dev \
+            libvulkan-dev libxkbcommon-dev pkg-config build-essential clang libclang-dev \
+            libgl1-mesa-dri libegl-mesa0 libegl1 libgles2 \
+            ffmpeg python3 dbus procps fonts-dejavu-core qt6-wayland libcap2-bin \
+            kwin-wayland plasma-workspace plasma-desktop dolphin
+          # KWin's cap_sys_nice file capability makes execve fail with EPERM on a
+          # container runner; strip it (not needed under software rendering).
+          setcap -r /usr/bin/kwin_wayland || true
+      - run: cargo build --release -p waymux-cli -p waymux-daemon -p waymux-session
+      - name: plasma demo (best-effort)
+        env: { WAYMUX_BINDIR: target/release, ARTIFACT_DIR: artifacts }
+        run: dbus-run-session -- bash tests/e2e/demo-plasma.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: plasma-demo, path: artifacts/ }
+
+  benchmark:
+    name: benchmark (software / no GPU)
+    runs-on: ubuntu-24.04
+    container: rust:1.94-trixie
+    steps:
+      - uses: actions/checkout@v5
+      - name: deps
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            libwayland-dev libgbm-dev libavutil-dev libavformat-dev libavcodec-dev \
+            libavfilter-dev libavdevice-dev libswscale-dev libswresample-dev \
+            libvulkan-dev libxkbcommon-dev pkg-config build-essential clang libclang-dev \
+            libgl1-mesa-dri libegl-mesa0 libegl1 libgles2 \
+            ffmpeg python3 dbus procps fonts-dejavu-core chromium kwrite qt6-wayland
+      - run: cargo build --release -p waymux-cli -p waymux-daemon -p waymux-session
+      - name: benchmark
+        env: { WAYMUX_BINDIR: target/release, ARTIFACT_DIR: artifacts, RECORD_SECS: "5" }
+        run: dbus-run-session -- bash tests/e2e/ci-bench.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: benchmark, path: artifacts/ }

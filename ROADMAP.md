@@ -30,6 +30,16 @@ Validated and in daily use:
   `tag`/`windows --tag` and `record status`/`viewer status` verbs; and an MCP
   server (`waymux-mcp`) that exposes every discrete verb to agents by execing
   the CLI (argv-only, no shell injection).
+- **Headless CI testing, no GPU.** The compositor, capture, screenshot, input
+  injection, and FFV1 recording all run on the CPU (Mesa llvmpipe), so the
+  embedded-app e2e (`tests/e2e/run-e2e-embedded.sh`) drives Chromium and a KDE
+  app on a stock, GPU-less shared runner. Ships a GPU-free container
+  (`tests/e2e/Dockerfile`) and CI jobs on both GitHub Actions and GitLab,
+  including `kde-app-demo` (gating), `plasma-demo` (full nested Plasma 6
+  desktop, allow-failure), and `benchmark` (functional recording gate with a
+  report artifact), all run via `tests/e2e/ci-demo-all.sh` /
+  `tests/e2e/Dockerfile.demo`. See
+  [docs/headless-ci-testing.md](docs/headless-ci-testing.md).
 
 Local-first by design: the CLI drives a per-user daemon over a unix socket
 (SO_PEERCRED, same-uid, 0600). No telemetry, no phone-home.

@@ -52,5 +52,5 @@ compositor, and MCP server (Apache-2.0).
 - End-to-end triage fixes from validating the recording and live-viewer paths
   with a nested compositor.
 
-[Unreleased]: https://github.com/waymux/waymux/compare/v0.2.0...HEAD
-[0.2.0]: https://github.com/waymux/waymux/releases/tag/v0.2.0
+[Unreleased]: https://gitlab.com/tek.cat/waymux/-/compare/v0.2.0...HEAD
+[0.2.0]: https://gitlab.com/tek.cat/waymux/-/releases/v0.2.0

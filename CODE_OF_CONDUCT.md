@@ -8,6 +8,6 @@ other unwelcoming behavior are not tolerated, in the issue tracker, pull
 requests, or any other project space.
 
 To report a concern, contact the maintainers privately through a
-[GitHub security advisory](https://github.com/waymux/waymux/security/advisories/new)
+[confidential GitLab issue](https://gitlab.com/tek.cat/waymux/-/issues/new)
 or the contact listed in [SECURITY.md](./SECURITY.md). Reports are handled
 confidentially.

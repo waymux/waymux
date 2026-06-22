@@ -1,0 +1,40 @@
+# waymux CI demo image: KDE apps + full Plasma 6, software-rendered (llvmpipe),
+# no GPU. Builds release binaries (debug screenshot latency is ~12x worse).
+FROM rust:1.94-trixie AS builder
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libwayland-dev libgbm-dev libavutil-dev libavformat-dev libavcodec-dev \
+      libavfilter-dev libavdevice-dev libswscale-dev libswresample-dev \
+      libvulkan-dev libxkbcommon-dev pkg-config build-essential clang libclang-dev \
+    && rm -rf /var/lib/apt/lists/*
+COPY Cargo.toml rust-toolchain.toml ./
+COPY crates/ crates/
+RUN cargo build --release -p waymux-cli -p waymux-daemon -p waymux-session
+
+FROM debian:trixie-slim
+WORKDIR /app
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates fonts-dejavu-core fonts-liberation \
+      libwayland-server0 libwayland-client0 libwayland-cursor0 libwayland-egl1 \
+      libgbm1 libdrm2 libxkbcommon0 xkb-data libvulkan1 \
+      libgl1-mesa-dri libegl-mesa0 libegl1 libgles2 libglx-mesa0 libgl1 \
+      ffmpeg python3 dbus procps libcap2-bin \
+      chromium kwrite dolphin foot qt6-wayland \
+      kwin-wayland plasma-workspace plasma-desktop \
+    && rm -rf /var/lib/apt/lists/*
+# KWin ships cap_sys_nice=ep for realtime scheduling; a file capability not in
+# the container's bounding set makes execve fail with EPERM on shared CI
+# runners. Strip it (headless software rendering does not need realtime), so
+# the Plasma demo needs no --cap-add and runs on any runner.
+RUN setcap -r /usr/bin/kwin_wayland || true
+COPY --from=builder /app/target/release/waymuxd        /app/target/release/waymuxd
+COPY --from=builder /app/target/release/waymux         /app/target/release/waymux
+COPY --from=builder /app/target/release/waymux-session /app/target/release/waymux-session
+COPY tests/ /app/tests/
+COPY scripts/waymux-run /usr/local/bin/waymux-run
+ENV WAYMUX_E2E_NO_BUILD=1 WAYMUX_BINDIR=/app/target/release \
+    PATH=/app/target/release:/usr/local/bin:$PATH \
+    LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe WAYMUX_DISABLE_SYNCOBJ=1 \
+    ARTIFACT_DIR=/artifacts
+ENTRYPOINT ["dbus-run-session", "--", "bash", "tests/e2e/ci-demo-all.sh"]

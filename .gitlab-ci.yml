@@ -1,5 +1,317 @@
-# GitLab Pages: publish the static holding page under site/ to waymux.dev.
-# Deploys only from the default branch. No Rust build runs here.
+# GitLab CI for the public waymux repo (gitlab.com/tek.cat/waymux).
+#
+# Ported from the GitHub Actions workflow (.github/workflows/ci.yml); both ship
+# in the public tree so whichever host the mirror lives on has a native, green
+# pipeline. Requires CI/CD runners enabled on the GitLab project (gitlab.com
+# free tier needs identity verification before shared runners are available),
+# otherwise jobs stay pending and the README pipeline badge will not go green.
+stages:
+  - check
+  - security
+  - publish
+  - deploy
+
+variables:
+  CARGO_TERM_COLOR: "always"
+  RUST_BACKTRACE: "short"
+  CARGO_HOME: "$CI_PROJECT_DIR/.cargo"
+
+# Shared Rust setup: the session crate's build.rs links gbm + avutil and
+# compiles a small ffmpeg C shim, and wayland-server needs libwayland headers.
+.rust-deps: &rust-deps
+  before_script:
+    - apt-get update
+    - >
+      apt-get install -y --no-install-recommends
+      libwayland-dev libgbm-dev libavutil-dev libavformat-dev libavcodec-dev
+      libavfilter-dev libavdevice-dev libswscale-dev libswresample-dev
+      libvulkan-dev libxkbcommon-dev pkg-config build-essential
+  cache:
+    key: "$CI_JOB_NAME"
+    paths:
+      - .cargo/registry/index
+      - .cargo/registry/cache
+      - .cargo/git/db
+      - target/
+
+# --- check stage --------------------------------------------------------------
+
+fmt:
+  stage: check
+  image: rust:1.94-trixie
+  <<: *rust-deps
+  script:
+    - rustup component add rustfmt
+    - cargo fmt --all -- --check
+
+clippy:
+  stage: check
+  # trixie (ffmpeg 7), not bookworm: the session crate's Vulkan FFV1 shim needs
+  # AVVkFrame fields added in ffmpeg 6.1+, so it will not compile on 5.1.
+  image: rust:1.94-trixie
+  <<: *rust-deps
+  script:
+    - rustup component add clippy
+    - cargo clippy --workspace --all-targets -- -D warnings
+
+test:
+  stage: check
+  # trixie (ffmpeg 7): the workspace test build includes the session crate's
+  # Vulkan FFV1 shim, which needs AVVkFrame fields added in ffmpeg 6.1+.
+  image: rust:1.94-trixie
+  <<: *rust-deps
+  variables:
+    LIBGL_ALWAYS_SOFTWARE: "1"
+  script:
+    - cargo test --workspace --all-targets --no-fail-fast
+
+# Software-only embedded-app e2e: drives Chromium and a KDE app as direct
+# Wayland clients under llvmpipe (no GPU, no /dev/dri), then asserts non-blank
+# screenshots and a lossless FFV1 recording. Proves the "headless Wayland
+# desktop in a box" path is green on a stock, GPU-less shared runner.
+embedded-e2e:
+  stage: check
+  # trixie, not bookworm: ffmpeg 7 (the session crate's Vulkan FFV1 shim needs
+  # AVVkFrame fields added in ffmpeg 6.1+; bookworm ships 5.1).
+  image: rust:1.94-trixie
+  <<: *rust-deps
+  before_script:
+    - apt-get update
+    # Build deps (incl. clang/libclang for the ffmpeg bindings) + the software
+    # render stack + ffmpeg + a session bus + the two real GUI clients.
+    - >
+      apt-get install -y --no-install-recommends
+      libwayland-dev libgbm-dev libavutil-dev libavformat-dev libavcodec-dev
+      libavfilter-dev libavdevice-dev libswscale-dev libswresample-dev
+      libvulkan-dev libxkbcommon-dev pkg-config build-essential clang libclang-dev
+      libgl1-mesa-dri libegl-mesa0 libegl1 libgles2
+      ffmpeg python3 dbus procps fonts-dejavu-core
+      chromium kwrite foot qt6-wayland
+  script:
+    - cargo build -p waymux-cli -p waymux-daemon -p waymux-session
+    - >
+      WAYMUX_E2E_NO_BUILD=1 LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe
+      dbus-run-session -- bash tests/e2e/run-e2e-embedded.sh
+
+# MSRV gate: the publishable lib + binaries must build on 1.88. No
+# --all-targets (that pulls dev-deps needing a newer Rust); tests run on 1.94.
+msrv-build:
+  stage: check
+  # trixie (ffmpeg 7): bookworm's 5.1 cannot compile the session crate's Vulkan
+  # FFV1 shim. The MSRV gate is about the Rust version (1.88), not the distro.
+  image: rust:1.88-trixie
+  <<: *rust-deps
+  script:
+    - cargo build --workspace
+
+deny:
+  stage: check
+  image: rust:1.94-trixie
+  script:
+    - cargo install cargo-deny --locked
+    - cargo deny check
+
+# waymux-protocol and waymux-mux-mkv are the publishable libs (leaf/near-leaf,
+# resolve against crates.io under --dry-run).
+publish-dryrun:
+  stage: check
+  image: rust:1.94-trixie
+  before_script:
+    - apt-get update
+    - apt-get install -y --no-install-recommends libwayland-dev pkg-config build-essential
+  script:
+    - cargo publish --dry-run -p waymux-protocol
+    - cargo publish --dry-run -p waymux-mux-mkv
+
+# neko-bridge is a Go subproject built from source (the checked-in binary is
+# dropped from the public tree).
+neko-bridge:
+  stage: check
+  image: golang:1.26-bookworm
+  script:
+    - cd crates/waymux-neko-bridge
+    - go build -o waymux-neko-bridge .
+    - test -x ./waymux-neko-bridge
+    - go vet ./...
+
+dep-isolation:
+  stage: check
+  image: rust:1.94-trixie
+  before_script:
+    - apt-get update
+    - apt-get install -y --no-install-recommends libwayland-dev pkg-config build-essential
+  script:
+    - ./ci/cargo-tree-guard.sh
+
+# Runs the KDE app demo script under llvmpipe (no GPU). Mirrors the GitHub
+# kde-app-demo job: same package set, release build, dbus-run-session.
+kde-app-demo:
+  stage: check
+  image: rust:1.94-trixie
+  <<: *rust-deps
+  before_script:
+    - apt-get update
+    - >
+      apt-get install -y --no-install-recommends
+      libwayland-dev libgbm-dev libavutil-dev libavformat-dev libavcodec-dev
+      libavfilter-dev libavdevice-dev libswscale-dev libswresample-dev
+      libvulkan-dev libxkbcommon-dev pkg-config build-essential clang libclang-dev
+      libgl1-mesa-dri libegl-mesa0 libegl1 libgles2
+      ffmpeg python3 dbus procps fonts-dejavu-core kwrite qt6-wayland
+  script:
+    - cargo build --release -p waymux-cli -p waymux-daemon -p waymux-session
+    - >
+      WAYMUX_BINDIR=target/release ARTIFACT_DIR=artifacts
+      dbus-run-session -- bash tests/e2e/demo-kde-app.sh
+  artifacts:
+    when: always
+    paths:
+      - artifacts/
+
+# Plasma 6 desktop demo (best-effort: kwin-wayland + plasma-workspace may be
+# missing or flaky in a GPU-less container). allow_failure mirrors
+# continue-on-error in the GitHub workflow.
+plasma-demo:
+  stage: check
+  image: rust:1.94-trixie
+  <<: *rust-deps
+  allow_failure: true
+  before_script:
+    - apt-get update
+    - >
+      apt-get install -y --no-install-recommends
+      libwayland-dev libgbm-dev libavutil-dev libavformat-dev libavcodec-dev
+      libavfilter-dev libavdevice-dev libswscale-dev libswresample-dev
+      libvulkan-dev libxkbcommon-dev pkg-config build-essential clang libclang-dev
+      libgl1-mesa-dri libegl-mesa0 libegl1 libgles2
+      ffmpeg python3 dbus procps fonts-dejavu-core qt6-wayland libcap2-bin
+      kwin-wayland plasma-workspace plasma-desktop dolphin
+    # KWin's cap_sys_nice file capability makes execve fail with EPERM on a
+    # container runner; strip it (not needed under software rendering).
+    - setcap -r /usr/bin/kwin_wayland || true
+  script:
+    - cargo build --release -p waymux-cli -p waymux-daemon -p waymux-session
+    - >
+      WAYMUX_BINDIR=target/release ARTIFACT_DIR=artifacts
+      dbus-run-session -- bash tests/e2e/demo-plasma.sh
+  artifacts:
+    when: always
+    paths:
+      - artifacts/
+
+# Software-only benchmark: records a short clip (RECORD_SECS=5) under llvmpipe
+# and emits timing artifacts. Mirrors the GitHub benchmark job exactly.
+benchmark:
+  stage: check
+  image: rust:1.94-trixie
+  <<: *rust-deps
+  before_script:
+    - apt-get update
+    - >
+      apt-get install -y --no-install-recommends
+      libwayland-dev libgbm-dev libavutil-dev libavformat-dev libavcodec-dev
+      libavfilter-dev libavdevice-dev libswscale-dev libswresample-dev
+      libvulkan-dev libxkbcommon-dev pkg-config build-essential clang libclang-dev
+      libgl1-mesa-dri libegl-mesa0 libegl1 libgles2
+      ffmpeg python3 dbus procps fonts-dejavu-core chromium kwrite qt6-wayland
+  script:
+    - cargo build --release -p waymux-cli -p waymux-daemon -p waymux-session
+    - >
+      WAYMUX_BINDIR=target/release ARTIFACT_DIR=artifacts RECORD_SECS=5
+      dbus-run-session -- bash tests/e2e/ci-bench.sh
+  artifacts:
+    when: always
+    paths:
+      - artifacts/
+
+# --- security stage -----------------------------------------------------------
+
+# Use the gitleaks binary directly (the CLI is free; the action needs a paid
+# license for orgs). Fetch the latest linux release dynamically so it does not
+# rot.
+secret-scan:
+  stage: security
+  image: debian:bookworm-slim
+  variables:
+    GIT_DEPTH: "0"
+  before_script:
+    - apt-get update
+    - apt-get install -y --no-install-recommends curl ca-certificates tar grep
+  script:
+    - url=$(curl -fsSL https://api.github.com/repos/gitleaks/gitleaks/releases/latest | grep -oE 'https://[^"]*_linux_x64\.tar\.gz' | head -1)
+    - echo "installing gitleaks from $url"
+    - curl -fsSL "$url" | tar -xz -C /usr/local/bin gitleaks
+    - gitleaks version
+    - gitleaks detect --source . --config .gitleaks.toml --no-banner --redact
+
+# This is a public mirror of a larger private tree. Fail if internal process
+# jargon, dead references to non-shipped docs, or developer paths slip into the
+# published surface. (ISO standard section refs are legitimate, not matched.)
+repo-hygiene:
+  stage: security
+  image: debian:bookworm-slim
+  before_script:
+    - apt-get update
+    - apt-get install -y --no-install-recommends grep
+  script:
+    - |
+      jargon='SPEC ?§|SPEC\.md|\bV[0-9]\.[0-9][A-Za-z]?\b|Plan [A-Z]\b|Sprint [0-9]|Task #?[0-9]+|eng-[0-9]+|\bWS[0-9]\b|SecOps|\bPhase [A-F]\b|RFC 20[0-9]|RFC build|week [0-9]|\.claude|docs/superpowers|docs/saas|[Hh]yperstack'
+      fail=0
+      if grep -rEn "$jargon|/home/[a-z]" crates --include='*.rs' --include='*.go'; then fail=1; fi
+      if grep -rEn "$jargon|/home/user" \
+           README.md ARCHITECTURE.md ROADMAP.md CHANGELOG.md \
+           CONTRIBUTING.md SECURITY.md CODE_OF_CONDUCT.md \
+           docs scripts tests \
+           --include='*.md' --include='*.sh' --include='*.py' 2>/dev/null; then fail=1; fi
+      if [ "$fail" = 1 ]; then
+        echo "internal-tree leak above (jargon, dead doc reference, or developer path)."
+        exit 1
+      fi
+      echo "clean: no internal-tree leaks in the published surface"
+
+# --- publish stage ------------------------------------------------------------
+
+# Build + push the two CI test images to the GitLab Container Registry (always)
+# and Docker Hub (when DOCKERHUB_USERNAME / DOCKERHUB_TOKEN are set as CI/CD
+# variables). Uses kaniko (no privileged runner needed). Runs on a tag or a
+# manual web run. Prerequisites on the GitLab project: CI/CD runners available
+# (gitlab.com free tier needs identity verification) and the Container Registry
+# enabled (Settings > General > Visibility).
+publish-images:
+  stage: publish
+  image:
+    name: gcr.io/kaniko-project/executor:debug
+    entrypoint: [""]
+  rules:
+    - if: '$CI_COMMIT_TAG'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+  parallel:
+    matrix:
+      - { IMAGE: waymux-ci,        DOCKERFILE: tests/e2e/Dockerfile }
+      - { IMAGE: waymux-ci-plasma, DOCKERFILE: tests/e2e/Dockerfile.demo }
+  script:
+    - mkdir -p /kaniko/.docker
+    - REG_AUTH=$(printf '%s' "$CI_REGISTRY_USER:$CI_REGISTRY_PASSWORD" | base64 | tr -d '\n')
+    - |
+      if [ -n "${DOCKERHUB_TOKEN:-}" ]; then
+        DH_AUTH=$(printf '%s' "$DOCKERHUB_USERNAME:$DOCKERHUB_TOKEN" | base64 | tr -d '\n')
+        printf '{"auths":{"%s":{"auth":"%s"},"https://index.docker.io/v1/":{"auth":"%s"}}}' \
+          "$CI_REGISTRY" "$REG_AUTH" "$DH_AUTH" > /kaniko/.docker/config.json
+      else
+        printf '{"auths":{"%s":{"auth":"%s"}}}' "$CI_REGISTRY" "$REG_AUTH" > /kaniko/.docker/config.json
+      fi
+    - TAG="${CI_COMMIT_TAG:-latest}"
+    - DEST="--destination $CI_REGISTRY_IMAGE/$IMAGE:$TAG --destination $CI_REGISTRY_IMAGE/$IMAGE:latest"
+    - |
+      if [ -n "${DOCKERHUB_TOKEN:-}" ]; then
+        DEST="$DEST --destination docker.io/$DOCKERHUB_USERNAME/$IMAGE:$TAG --destination docker.io/$DOCKERHUB_USERNAME/$IMAGE:latest"
+      fi
+    - /kaniko/executor --context "$CI_PROJECT_DIR" --dockerfile "$CI_PROJECT_DIR/$DOCKERFILE" $DEST
+
+# --- deploy stage -------------------------------------------------------------
+
+# Publish the static site under site/ to GitLab Pages (waymux.dev). The site is
+# committed in the public repo's site/ directory; this just copies it to public/.
 pages:
   stage: deploy
   image: alpine:latest

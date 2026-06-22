@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# waymux-run: run a command inside a fresh, headless, no-GPU waymux Wayland
+# session. Think "xvfb-run, for Wayland": it creates a session, points
+# WAYLAND_DISPLAY at the session's inner socket, runs your command, and always
+# collects a screenshot (and, with --record, a lossless FFV1 clip) into
+# ARTIFACT_DIR. It exits with your command's status.
+#
+# Usage:
+#   waymux-run -- <command> [args...]
+#   waymux-run --size 1920x1080 --record -- ./run-gui-tests.sh
+#
+# Options:
+#   --size WxH       session size (default 1280x800)
+#   --record         record a lossless FFV1 clip for the whole run
+#   --name NAME      session name (default "run")
+#   --artifacts DIR  output dir (default ARTIFACT_DIR or ./waymux-artifacts)
+#   -h, --help       show this help
+#
+# Environment:
+#   ARTIFACT_DIR     where the screenshot/recording land (default ./waymux-artifacts)
+#   WAYMUX_BINDIR    dir holding the waymux binaries, if not already on PATH
+#   LIBGL_ALWAYS_SOFTWARE / GALLIUM_DRIVER / WAYMUX_DISABLE_SYNCOBJ
+#                    forced to software defaults unless you set them
+set -uo pipefail
+
+SIZE=1280x800
+RECORD=0
+NAME=run
+ART="${ARTIFACT_DIR:-./waymux-artifacts}"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --size)      SIZE="$2"; shift 2;;
+    --record)    RECORD=1; shift;;
+    --name)      NAME="$2"; shift 2;;
+    --artifacts) ART="$2"; shift 2;;
+    -h|--help)   sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; exit 0;;
+    --)          shift; break;;
+    *)           echo "waymux-run: unknown option: $1 (did you forget '--' before the command?)" >&2; exit 2;;
+  esac
+done
+[ $# -ge 1 ] || { echo "waymux-run: no command given; use: waymux-run -- <command>" >&2; exit 2; }
+
+# Software rendering defaults (only set what the caller has not).
+export LIBGL_ALWAYS_SOFTWARE="${LIBGL_ALWAYS_SOFTWARE:-1}"
+export GALLIUM_DRIVER="${GALLIUM_DRIVER:-llvmpipe}"
+export WAYMUX_DISABLE_SYNCOBJ="${WAYMUX_DISABLE_SYNCOBJ:-1}"
+[ -n "${WAYMUX_BINDIR:-}" ] && export PATH="$WAYMUX_BINDIR:$PATH"
+command -v waymux >/dev/null 2>&1 || {
+  echo "waymux-run: 'waymux' not found on PATH (set WAYMUX_BINDIR to its directory)" >&2; exit 127; }
+
+# The per-session sockets rely on a 0700 runtime dir for access control.
+if [ -z "${XDG_RUNTIME_DIR:-}" ] || [ ! -d "${XDG_RUNTIME_DIR:-/nonexistent}" ]; then
+  XDG_RUNTIME_DIR="$(mktemp -d)"; export XDG_RUNTIME_DIR
+fi
+chmod 700 "$XDG_RUNTIME_DIR" 2>/dev/null || true
+mkdir -p "$ART"
+
+REC=""
+cleanup() {
+  [ "$RECORD" = 1 ] && waymux record stop "$NAME" >/dev/null 2>&1
+  # Final-state screenshot (best-effort).
+  waymux screenshot-desktop "$NAME" -o "$ART/$NAME.png" >/dev/null 2>&1
+  [ "$RECORD" = 1 ] && [ -n "$REC" ] && [ -f "$REC" ] && cp "$REC" "$ART/$NAME.mkv" 2>/dev/null
+  waymux rm "$NAME" >/dev/null 2>&1
+}
+trap cleanup EXIT
+
+# Create the session. A local verb auto-spawns the daemon when its socket is
+# absent, so a fresh container or shell works with no separate setup.
+waymux new "$NAME" --size "$SIZE" >/dev/null 2>&1 || {
+  echo "waymux-run: failed to create session '$NAME'" >&2; exit 1; }
+export WAYLAND_DISPLAY="$XDG_RUNTIME_DIR/waymux/$NAME/wayland.sock"
+
+if [ "$RECORD" = 1 ]; then
+  REC=$(waymux --json record start "$NAME" --codec ffv1 --min-fps 15 2>/dev/null \
+        | python3 -c 'import sys,json;print(json.load(sys.stdin).get("data",{}).get("path",""))' 2>/dev/null || true)
+fi
+
+# Run the user command with WAYLAND_DISPLAY pointed at the session.
+"$@"
+exit $?

@@ -22,8 +22,8 @@ line.
 Please do not open a public issue, pull request, or discussion for a security
 vulnerability. Instead, use one of these private channels:
 
-- Open a private security advisory on GitHub:
-  <https://github.com/waymux/waymux/security/advisories/new>.
+- Open a confidential issue on GitLab:
+  <https://gitlab.com/tek.cat/waymux/-/issues/new> (tick "This issue is confidential").
 - Or email **security@waymux.cloud**.
 
 Please include:

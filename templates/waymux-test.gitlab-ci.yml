@@ -1,0 +1,37 @@
+# Reusable GitLab CI template for headless, no-GPU Wayland app testing.
+#
+# Include it, then extend `.waymux-test`, pointing WAYMUX_IMAGE at your own image
+# (build it FROM the published waymux-ci so it has your app plus waymux-run) and
+# WAYMUX_RUN at your test command. The job runs your command inside a fresh,
+# software-rendered Wayland session and uploads a screenshot (and, with
+# WAYMUX_RECORD=1, a recording) on every run.
+#
+#   include:
+#     - remote: 'https://gitlab.com/tek.cat/waymux/-/raw/main/templates/waymux-test.gitlab-ci.yml'
+#
+#   gui-test:
+#     extends: .waymux-test
+#     variables:
+#       WAYMUX_IMAGE: '$CI_REGISTRY_IMAGE/my-app-with-waymux:latest'
+#       WAYMUX_RUN: './run-gui-tests.sh'
+#
+# Defaults below run the bundled demo apps so the template is usable as-is for a
+# smoke test.
+.waymux-test:
+  image: "$WAYMUX_IMAGE"
+  variables:
+    WAYMUX_IMAGE: "registry.gitlab.com/tek.cat/waymux/waymux-ci:latest"
+    WAYMUX_SIZE: "1280x800"
+    WAYMUX_RECORD: "0"
+    WAYMUX_RUN: "kwrite --version"
+    ARTIFACT_DIR: "waymux-artifacts"
+  script:
+    - rec=""; [ "$WAYMUX_RECORD" = "1" ] && rec="--record"
+    - >
+      dbus-run-session --
+      waymux-run --size "$WAYMUX_SIZE" --artifacts "$ARTIFACT_DIR" $rec
+      -- bash -lc "$WAYMUX_RUN"
+  artifacts:
+    when: always
+    paths:
+      - "$ARTIFACT_DIR/"

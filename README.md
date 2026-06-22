@@ -3,11 +3,11 @@
 **Headless Wayland sessions you can spawn, screenshot, record, script, and watch
 live in a browser, driven by a CLI and an MCP server.**
 
-[![CI](https://github.com/waymux/waymux/actions/workflows/ci.yml/badge.svg)](https://github.com/waymux/waymux/actions/workflows/ci.yml)
+[![pipeline status](https://gitlab.com/tek.cat/waymux/badges/main/pipeline.svg)](https://gitlab.com/tek.cat/waymux/-/pipelines)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 [![MSRV: Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](./rust-toolchain.toml)
 
-Project home: [github.com/waymux/waymux](https://github.com/waymux/waymux).
+Project home: [gitlab.com/tek.cat/waymux](https://gitlab.com/tek.cat/waymux).
 
 Multiplex Wayland clients (and nested compositors like KWin / Plasma 6) as
 named, headless, detachable sessions: spawn an app or a whole desktop into a
@@ -40,6 +40,13 @@ License: Apache-2.0. Status: early public release (`0.2.0-dev`). See
 - **View live.** Start a built-in WebRTC viewer that serves an HTML page; open
   it in a browser to watch and control the session. Binds to `127.0.0.1` by
   default.
+- **Test in CI without a GPU.** The compositor, capture, screenshot, input
+  injection, and FFV1 recording all run on the CPU (Mesa llvmpipe), so you can
+  drive and assert real GUI apps on a stock shared runner. Published images
+  (`waymux-ci`, `waymux-ci-plasma`), a `waymux-run` wrapper ("xvfb-run for
+  Wayland"), a GitHub Action (`waymux/waymux@v1`), and a GitLab CI `include`
+  template make it a drop-in. See
+  [docs/headless-ci-testing.md](docs/headless-ci-testing.md).
 
 ## Try it
 
@@ -271,6 +278,18 @@ the recorder's.) ffmpeg is dynamically linked against the system LGPL libraries.
 The recorder invokes only FFV1 and hardware encoders (no GPL x264/x265); the
 live viewer additionally has an opt-in CPU x264 fallback (libx264, GPL) used
 only when you set `WAYMUX_VIEWER_CODEC=h264-software`.
+
+## Headless CI testing (no GPU)
+
+waymux doubles as an "Xvfb for Wayland": host real GUI apps in a nested session,
+inject input, and assert on screenshots or a lossless recording, with no display
+and no GPU. `tests/e2e/run-e2e-embedded.sh` drives Chromium and a KDE app under
+software rendering (Mesa llvmpipe) end to end; `tests/e2e/Dockerfile` runs it in
+a GPU-free container; and both the GitHub Actions and GitLab CI pipelines run
+that harness plus three additional demo and benchmark jobs (`kde-app-demo`,
+`plasma-demo`, `benchmark`) that exercise KDE apps and a full nested Plasma 6
+desktop via `tests/e2e/ci-demo-all.sh` and `tests/e2e/Dockerfile.demo`. See
+[docs/headless-ci-testing.md](docs/headless-ci-testing.md).
 
 ## View a session in a browser (loopback)
 

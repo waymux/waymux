@@ -1,0 +1,60 @@
+name: 'waymux test'
+description: 'Run a command in a headless, no-GPU waymux Wayland session and collect screenshots plus a recording.'
+branding:
+  icon: 'monitor'
+  color: 'purple'
+inputs:
+  run:
+    description: 'Command to run inside the headless Wayland session.'
+    required: true
+  image:
+    description: 'Container image to run in. Build yours FROM ghcr.io/waymux/waymux-ci and point this at it; the default only contains the bundled demo apps.'
+    required: false
+    default: 'ghcr.io/waymux/waymux-ci:latest'
+  size:
+    description: 'Session size, WxH.'
+    required: false
+    default: '1280x800'
+  record:
+    description: 'Record a lossless FFV1 clip of the run (true/false).'
+    required: false
+    default: 'false'
+  artifacts:
+    description: 'Directory (in the workspace) for the screenshot and recording.'
+    required: false
+    default: 'waymux-artifacts'
+  upload:
+    description: 'Upload the artifacts directory with actions/upload-artifact (true/false).'
+    required: false
+    default: 'true'
+runs:
+  using: 'composite'
+  steps:
+    - name: Run in a waymux session
+      shell: bash
+      env:
+        WAYMUX_IMAGE: ${{ inputs.image }}
+        WAYMUX_SIZE: ${{ inputs.size }}
+        WAYMUX_RECORD: ${{ inputs.record }}
+        WAYMUX_ARTIFACTS: ${{ inputs.artifacts }}
+        WAYMUX_CMD: ${{ inputs.run }}
+      run: |
+        set -euo pipefail
+        mkdir -p "$WAYMUX_ARTIFACTS"
+        rec=""
+        [ "$WAYMUX_RECORD" = "true" ] && rec="--record"
+        # The image runs the command in a fresh, software-rendered Wayland
+        # session. dbus-run-session gives KDE/Qt apps a session bus; waymux-run
+        # points WAYLAND_DISPLAY at the session and collects the artifacts.
+        docker run --rm --shm-size=512m \
+          -v "$PWD:/workspace" -w /workspace \
+          -e ARTIFACT_DIR="/workspace/$WAYMUX_ARTIFACTS" \
+          --entrypoint dbus-run-session \
+          "$WAYMUX_IMAGE" \
+          -- waymux-run --size "$WAYMUX_SIZE" $rec -- bash -lc "$WAYMUX_CMD"
+    - name: Upload artifacts
+      if: ${{ always() && inputs.upload == 'true' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: waymux-artifacts
+        path: ${{ inputs.artifacts }}/
