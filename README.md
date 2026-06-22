@@ -282,14 +282,48 @@ only when you set `WAYMUX_VIEWER_CODEC=h264-software`.
 ## Headless CI testing (no GPU)
 
 waymux doubles as an "Xvfb for Wayland": host real GUI apps in a nested session,
-inject input, and assert on screenshots or a lossless recording, with no display
-and no GPU. `tests/e2e/run-e2e-embedded.sh` drives Chromium and a KDE app under
-software rendering (Mesa llvmpipe) end to end; `tests/e2e/Dockerfile` runs it in
-a GPU-free container; and both the GitHub Actions and GitLab CI pipelines run
-that harness plus three additional demo and benchmark jobs (`kde-app-demo`,
-`plasma-demo`, `benchmark`) that exercise KDE apps and a full nested Plasma 6
-desktop via `tests/e2e/ci-demo-all.sh` and `tests/e2e/Dockerfile.demo`. See
+inject input, and assert on what they drew, with no display and no GPU.
+Screenshots are the cheap, immediate primitive; recording works too (FFV1 on the
+CPU) but at roughly 10 fps, so treat a clip as a record of what happened rather
+than smooth video. `tests/e2e/run-e2e-embedded.sh` drives Chromium and a KDE app
+under software rendering (Mesa llvmpipe) end to end, and `tests/e2e/Dockerfile`
+runs it in a GPU-free container. See
 [docs/headless-ci-testing.md](docs/headless-ci-testing.md).
+
+### GitHub Action
+
+Build your app into an image `FROM ghcr.io/waymux/waymux-ci`, then run any
+command in a fresh, software-rendered session and collect the artifacts:
+
+```yaml
+- uses: waymux/waymux@v1
+  with:
+    image: ghcr.io/waymux/my-app-with-waymux:latest
+    run: ./run-gui-tests.sh
+    record: 'true'        # also capture a clip (optional)
+```
+
+The screenshot (and recording) are uploaded as a build artifact. See
+[`action.yml`](action.yml) for every input.
+
+### GitLab CI
+
+Include the template and extend `.waymux-test`:
+
+```yaml
+include:
+  - remote: 'https://gitlab.com/tek.cat/waymux/-/raw/main/templates/waymux-test.gitlab-ci.yml'
+
+gui-test:
+  extends: .waymux-test
+  variables:
+    WAYMUX_IMAGE: '$CI_REGISTRY_IMAGE/my-app-with-waymux:latest'
+    WAYMUX_RUN: './run-gui-tests.sh'
+```
+
+Both hosts also run the full harness plus demo and benchmark jobs
+(`kde-app-demo`, `plasma-demo`, `benchmark`) that exercise KDE apps and a nested
+Plasma 6 desktop.
 
 ## View a session in a browser (loopback)
 
