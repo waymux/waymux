@@ -1,0 +1,46 @@
+name: recording head-to-head
+
+# waymux (focused-window, lossless FFV1) vs Xvfb + ffmpeg x11grab (lossless
+# x264) recording the SAME animated page on the SAME runner, software-only, no
+# GPU. Uploads both clips + a comparison table. Runs on demand or when the
+# harness / logo / this file changes.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'tests/e2e/bench-headtohead.sh'
+      - 'site/logo.html'
+      - '.github/workflows/head-to-head.yml'
+
+jobs:
+  head-to-head:
+    name: waymux vs Xvfb+ffmpeg (software, no GPU)
+    runs-on: ubuntu-24.04
+    container: rust:1.94-trixie
+    steps:
+      - uses: actions/checkout@v5
+      - name: deps
+        run: |
+          apt-get update
+          # waymux build deps + clang (bindgen) + software GL + ffmpeg (x11grab +
+          # libx264) + a real Chromium + Xvfb for the X11 path.
+          apt-get install -y --no-install-recommends \
+            libwayland-dev libgbm-dev libavutil-dev libavformat-dev libavcodec-dev \
+            libavfilter-dev libavdevice-dev libswscale-dev libswresample-dev \
+            libvulkan-dev libxkbcommon-dev pkg-config build-essential clang libclang-dev \
+            libgl1-mesa-dri libegl-mesa0 libegl1 libgles2 \
+            ffmpeg python3 dbus procps fonts-dejavu-core chromium xvfb
+      - run: cargo build --release -p waymux-cli -p waymux-daemon -p waymux-session
+      - name: head-to-head
+        env:
+          WAYMUX_BINDIR: target/release
+          ARTIFACT_DIR: artifacts
+          RECORD_SECS: "8"
+          RES: "1280x720"
+        run: dbus-run-session -- bash tests/e2e/bench-headtohead.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: head-to-head
+          path: artifacts/

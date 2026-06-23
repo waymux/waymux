@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>waymux</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#000;
+            font-family:'IBM Plex Mono',ui-monospace,monospace}
+  #gl{display:block;width:100vw;height:100vh}
+  /* wordmark + live frame counter: gives the recording a provably-distinct
+     frame every tick and a high-contrast centre for capture. */
+  #hud{position:fixed;left:0;right:0;bottom:26px;text-align:center;
+       color:#5b6b70;font-size:13px;letter-spacing:3px;text-transform:uppercase;
+       pointer-events:none;text-shadow:0 0 10px #000}
+  #mark{position:fixed;top:24px;left:0;right:0;text-align:center;
+        color:#00d9ff;font-weight:700;font-size:15px;letter-spacing:6px;
+        text-transform:uppercase;pointer-events:none;text-shadow:0 0 16px #00d9ff66}
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="mark">waymux</div>
+<div id="hud">frame <span id="n">0</span> &middot; software webgl &middot; no gpu</div>
+<script>
+const cv = document.getElementById('gl');
+const gl = cv.getContext('webgl', {antialias:false, preserveDrawingBuffer:false});
+
+const VS = `attribute vec2 p; void main(){ gl_Position = vec4(p,0.,1.); }`;
+
+// Raymarched, extruded, glowing "w". Emissive cyan surface + a 1/d^2 glow
+// accumulation gives a bloom-like halo. Rotates in 3D so every frame differs.
+const FS = `
+precision highp float;
+uniform vec2 R; uniform float T;
+float seg(vec2 p, vec2 a, vec2 b){
+  vec2 pa=p-a, ba=b-a; float h=clamp(dot(pa,ba)/dot(ba,ba),0.,1.);
+  return length(pa-ba*h);
+}
+// 2D distance to the letter w (four strokes), minus stroke radius
+float w2d(vec2 p){
+  float d=1e9;
+  d=min(d, seg(p, vec2(-1.05,0.72), vec2(-0.55,-0.72)));
+  d=min(d, seg(p, vec2(-0.55,-0.72), vec2(0.0,0.34)));
+  d=min(d, seg(p, vec2(0.0,0.34),    vec2(0.55,-0.72)));
+  d=min(d, seg(p, vec2(0.55,-0.72),  vec2(1.05,0.72)));
+  return d - 0.155;
+}
+// 3D extrusion of the 2D w
+float map(vec3 p){
+  float d2=w2d(p.xy);
+  float dz=abs(p.z)-0.20;
+  return min(max(d2,dz),0.) + length(max(vec2(d2,dz),0.0));
+}
+mat2 rot(float a){ float c=cos(a), s=sin(a); return mat2(c,-s,s,c); }
+void main(){
+  vec2 uv=(gl_FragCoord.xy*2.0 - R)/R.y;
+  vec3 ro=vec3(0.0,0.0,3.4);
+  vec3 rd=normalize(vec3(uv, -2.0));
+  // gentle 3D tumble
+  float ay=T*0.55, ax=0.32*sin(T*0.4);
+  vec3 cyan=vec3(0.0,0.85,1.0);
+  float t=0.0, glow=0.0; vec3 col=vec3(0.0); bool hit=false; vec3 hp;
+  for(int i=0;i<90;i++){
+    vec3 p=ro+rd*t;
+    p.yz = rot(ax)*p.yz;
+    p.xz = rot(ay)*p.xz;
+    float d=map(p);
+    glow += 0.010/(0.008 + d*d);
+    if(d<0.0015){ hit=true; hp=p; break; }
+    t += d*0.85;
+    if(t>9.0) break;
+  }
+  if(hit){
+    // cheap normal for a fresnel rim
+    vec2 e=vec2(0.002,0.0);
+    vec3 nrm=normalize(vec3(
+      map(hp+e.xyy)-map(hp-e.xyy),
+      map(hp+e.yxy)-map(hp-e.yxy),
+      map(hp+e.yyx)-map(hp-e.yyx)));
+    float fres=pow(1.0-abs(dot(nrm, normalize(ro-hp))), 2.5);
+    col = cyan*(0.55 + 0.9*fres) + vec3(0.9,1.0,1.0)*fres*0.4;
+  }
+  col += cyan*glow*0.42;                 // bloom halo
+  col += cyan*0.018*(1.0-length(uv)*0.4); // faint vignette wash
+  col = col/(1.0+col);                    // tonemap the HDR glow
+  col = pow(col, vec3(0.85));
+  gl_FragColor=vec4(col,1.0);
+}`;
+
+function sh(type, src){ const s=gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s, gl.COMPILE_STATUS)) console.error(gl.getShaderInfoLog(s)); return s; }
+const prog=gl.createProgram();
+gl.attachShader(prog, sh(gl.VERTEX_SHADER, VS));
+gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, FS));
+gl.linkProgram(prog); gl.useProgram(prog);
+const buf=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+const loc=gl.getAttribLocation(prog,'p'); gl.enableVertexAttribArray(loc);
+gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);
+const uR=gl.getUniformLocation(prog,'R'), uT=gl.getUniformLocation(prog,'T');
+
+function resize(){ const d=Math.min(window.devicePixelRatio||1, 2);
+  cv.width=Math.floor(innerWidth*d); cv.height=Math.floor(innerHeight*d);
+  gl.viewport(0,0,cv.width,cv.height); }
+addEventListener('resize', resize); resize();
+
+const nEl=document.getElementById('n'); let n=0, t0=performance.now();
+function frame(){ n++; nEl.textContent=n;
+  gl.uniform2f(uR, cv.width, cv.height);
+  gl.uniform1f(uT, (performance.now()-t0)/1000);
+  gl.drawArrays(gl.TRIANGLES,0,3);
+  requestAnimationFrame(frame); }
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
